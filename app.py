@@ -4,6 +4,7 @@ from datetime import date, datetime
 import hmac
 import html
 import io
+import json
 import zipfile
 
 import pandas as pd
@@ -11,7 +12,6 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy.exc import IntegrityError
 
-from market_watch.ai_brief import create_market_brief, create_stock_analysis
 from market_watch.analytics import add_indicators, calculate_positions, market_regime, stock_metrics
 from market_watch.charts import price_chart, sector_chart
 from market_watch.config import settings
@@ -20,6 +20,72 @@ from market_watch.demo_data import bars as demo_bars
 from market_watch.demo_data import news as demo_news
 from market_watch.demo_data import snapshots as demo_snapshots
 from market_watch.market_data import MarketDataError, MarketDataService
+
+
+
+def _ai_client(settings):
+    if not settings.ai_enabled:
+        return None
+    from openai import OpenAI
+    return OpenAI(api_key=settings.openai_api_key)
+
+
+def create_market_brief(settings, market_payload: dict, length: str = "Concise") -> str:
+    client = _ai_client(settings)
+    if client is None:
+        return "AI commentary is disabled. Add OPENAI_API_KEY to Streamlit Secrets."
+    word_limit = 260 if length == "Concise" else 520
+    instructions = f"""
+You are the analytical briefing layer in a personal stock-market dashboard. Use only the supplied data.
+Write for an active investor who holds speculative growth names and also watches the broad market.
+Separate observations from interpretation. Never promise returns and never issue an unconditional buy or sell order.
+Do not pad the response. Maximum {word_limit} words.
+
+Use exactly these headings:
+## Market status
+## What is moving
+## What matters to your watchlist
+## Opportunities to research
+## Key risks
+## Today's action list
+
+Be direct, specific, and easy to scan on a phone.
+""".strip()
+    response = client.responses.create(
+        model=settings.openai_model,
+        instructions=instructions,
+        input=json.dumps(market_payload, default=str),
+    )
+    return response.output_text.strip()
+
+
+def create_stock_analysis(settings, stock_payload: dict, length: str = "Concise") -> str:
+    client = _ai_client(settings)
+    if client is None:
+        return "AI commentary is disabled. Add OPENAI_API_KEY to Streamlit Secrets."
+    word_limit = 320 if length == "Concise" else 650
+    instructions = f"""
+You are the stock-research layer in a personal market dashboard. Analyze only the supplied ticker data,
+technical metrics, news, saved watchlist levels, and user notes. Do not invent missing facts.
+Never promise returns and never issue an unconditional buy or sell instruction. Maximum {word_limit} words.
+
+Use exactly these headings:
+## Snapshot
+## Bull case
+## Bear case
+## Catalysts and news
+## Technical setup
+## Confirmation and invalidation
+## Personalized action plan
+
+Keep the writing practical, balanced, and optimized for phone reading.
+""".strip()
+    response = client.responses.create(
+        model=settings.openai_model,
+        instructions=instructions,
+        input=json.dumps(stock_payload, default=str),
+    )
+    return response.output_text.strip()
 
 
 st.set_page_config(
