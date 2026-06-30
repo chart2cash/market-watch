@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 from sqlalchemy.exc import IntegrityError
 
-from market_watch.ai_brief import create_market_brief
+from market_watch.ai_brief import create_market_brief, create_stock_analysis
 from market_watch.analytics import add_indicators, calculate_positions, market_regime, stock_metrics
 from market_watch.charts import price_chart, sector_chart
 from market_watch.config import settings
@@ -268,9 +268,10 @@ def overview_page() -> None:
     articles = get_news(news_symbols, 10)
     display_news(articles)
 
-    with st.expander("Generate an AI-assisted market brief"):
-        st.caption("The brief distinguishes facts from interpretation and is not an automated trade instruction.")
-        if st.button("Generate brief", type="primary"):
+    with st.expander("AI-assisted market brief", expanded=bool(st.session_state.get("market_brief"))):
+        st.caption("Choose a compact phone-friendly brief or a deeper review. AI output is analysis, not an automated trade instruction.")
+        brief_length = st.radio("Brief length", ["Concise", "Detailed"], horizontal=True, key="market_brief_length")
+        if st.button("Generate market brief", type="primary"):
             payload = {
                 "generated_at": datetime.now().isoformat(),
                 "data_mode": market.mode_label,
@@ -278,13 +279,29 @@ def overview_page() -> None:
                 "indexes": index_data.to_dict("records"),
                 "sectors": sector_data.to_dict("records"),
                 "action_queue": queue.to_dict("records") if not queue.empty else [],
+                "watchlist": items.to_dict("records") if not items.empty else [],
                 "news": articles[:8],
             }
             with st.spinner("Generating commentary..."):
                 try:
-                    st.markdown(create_market_brief(settings, payload))
+                    st.session_state["market_brief"] = create_market_brief(settings, payload, brief_length)
+                    st.session_state["market_brief_generated_at"] = datetime.now().strftime("%b %d, %Y %I:%M %p")
                 except Exception as exc:
                     st.error(f"AI brief could not be generated: {exc}")
+
+        brief = st.session_state.get("market_brief")
+        if brief:
+            st.caption(f"Generated {st.session_state.get('market_brief_generated_at', '')} · {market.mode_label}")
+            st.markdown(brief)
+            st.markdown("**Copy or download**")
+            st.code(brief, language=None, wrap_lines=True)
+            st.download_button(
+                "Download market brief",
+                data=brief,
+                file_name=f"market_brief_{date.today().isoformat()}.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
 
 
 def watchlists_page() -> None:
@@ -421,7 +438,47 @@ def research_page() -> None:
                 )
     with right:
         st.subheader(f"{symbol} news")
-        display_news(get_news([symbol], 8))
+        symbol_news = get_news([symbol], 8)
+        display_news(symbol_news)
+
+    st.subheader(f"AI analysis: {symbol}")
+    st.caption("Balanced analysis of the supplied chart, metrics, saved levels, notes, and news. It does not place trades or guarantee outcomes.")
+    analysis_length = st.radio("Analysis length", ["Concise", "Detailed"], horizontal=True, key=f"stock_analysis_length_{symbol}")
+    analysis_key = f"stock_analysis_{symbol}"
+    generated_key = f"stock_analysis_generated_{symbol}"
+    if st.button(f"Generate {symbol} analysis", type="primary", key=f"generate_analysis_{symbol}"):
+        matching_watch = watch_items[watch_items["symbol"] == symbol] if not watch_items.empty else pd.DataFrame()
+        saved_notes = db.notes(symbol)
+        payload = {
+            "generated_at": datetime.now().isoformat(),
+            "data_mode": market.mode_label,
+            "symbol": symbol,
+            "technical_metrics": metrics,
+            "recent_price_bars": frame.tail(30).to_dict("records"),
+            "saved_watchlist_rules": matching_watch.to_dict("records") if not matching_watch.empty else [],
+            "saved_research_notes": saved_notes.head(20).to_dict("records") if not saved_notes.empty else [],
+            "news": symbol_news,
+        }
+        with st.spinner(f"Analyzing {symbol}..."):
+            try:
+                st.session_state[analysis_key] = create_stock_analysis(settings, payload, analysis_length)
+                st.session_state[generated_key] = datetime.now().strftime("%b %d, %Y %I:%M %p")
+            except Exception as exc:
+                st.error(f"AI stock analysis could not be generated: {exc}")
+
+    analysis = st.session_state.get(analysis_key)
+    if analysis:
+        st.caption(f"Generated {st.session_state.get(generated_key, '')} · {market.mode_label}")
+        st.markdown(analysis)
+        st.markdown("**Copy or download**")
+        st.code(analysis, language=None, wrap_lines=True)
+        st.download_button(
+            f"Download {symbol} analysis",
+            data=analysis,
+            file_name=f"{symbol.lower()}_analysis_{date.today().isoformat()}.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
 
 
 def screener_page() -> None:
